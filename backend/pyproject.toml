@@ -1,0 +1,29 @@
+# Configuración de herramientas. Las dependencias se instalan con
+# requirements.txt / requirements-dev.txt dentro de la imagen Docker.
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = [
+    "S101",  # assert en tests
+    "S105",  # tokens de ejemplo en tests
+    "B008",  # Depends() en defaults de FastAPI es el patrón correcto
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S311"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true

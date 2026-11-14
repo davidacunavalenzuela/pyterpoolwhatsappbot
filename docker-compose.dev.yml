@@ -1,0 +1,57 @@
+# =============================================================================
+# Overrides para desarrollo local.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Cambios:
+#  - Postgres expone 5432 para poder usar psql/DBeaver desde el host.
+#  - API con autoreload y código montado (sin rebuild por cada cambio).
+#  - Nginx expone 8080 sin túnel; se accede a http://localhost:8080
+#  - MEM_LIMIT más holgado en local (no es el servidor de 4 GB).
+# =============================================================================
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+    mem_limit: 512m
+
+  api:
+    command: ["api-dev"]
+    volumes:
+      - ./backend:/app
+      - models:/models
+      - ./docs:/app/docs
+    environment:
+      APP_ENV: dev
+      COOKIE_SECURE: "false"
+    mem_limit: 1024m
+
+  worker:
+    volumes:
+      - ./backend:/app
+      - models:/models
+      - ./docs:/app/docs
+    environment:
+      APP_ENV: dev
+    mem_limit: 1024m
+
+  nginx:
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # Túnel efímero de pruebas (TryCloudflare, sin cuenta ni token).
+  # Apunta a nginx por la red interna del compose, no a localhost: dentro del
+  # contenedor `localhost` sería el propio cloudflared. La URL pública es
+  # aleatoria y puede cambiar al reiniciar el contenedor, así que se revisa en
+  # `docker compose logs tunnel-dev` y se actualiza el callback de Meta.
+  # El túnel definitivo es el servicio `cloudflared` del compose base.
+  tunnel-dev:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://nginx:80"]
+    depends_on:
+      nginx:
+        condition: service_healthy
+    profiles: ["quicktunnel"]
+    mem_limit: 128m
+    networks: [internal]

@@ -1,0 +1,148 @@
+# =============================================================================
+# Stack de producción para un servidor de 4 GB de RAM.
+#
+# Decisiones:
+#  - Solo Nginx publica puerto (8080 en el host). Postgres y la API quedan en
+#    la red interna: Cloudflare Tunnel es el único camino desde Internet.
+#  - `mem_limit` explícito en cada servicio para que un pico del LLM/embeddings
+#    no tumbe Postgres. Con 4 GB, la suma de límites deja aire al sistema.
+#  - El worker usa la misma imagen que la API (menos capas y menos RAM que
+#    duplicar dependencias) pero corre como proceso aparte para aislar fallos.
+#  - Cloudflare Tunnel va en el perfil "tunnel": en desarrollo no se levanta y
+#    en producción se arranca con `docker compose --profile tunnel up -d`.
+# =============================================================================
+name: whatsappbot
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Postgres afina su propio locale; el contenedor queda en UTC y la app
+      # convierte a America/Santiago con zoneinfo.
+      TZ: UTC
+    command:
+      - postgres
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=50
+      - -c
+      - idle_in_transaction_session_timeout=30s
+      - -c
+      - statement_timeout=60s
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` sin credenciales solo verifica que el motor acepte conexiones,
+      # que es justo lo que necesita la API para arrancar.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    mem_limit: 1024m
+    shm_size: 256m
+    networks: [internal]
+
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/Santiago
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    volumes:
+      - models:/models
+      # Los manuales se leen y los PDFs subidos desde el panel se guardan aquí,
+      # de modo que sobrevivan a rebuilds de la imagen.
+      - ./docs:/app/docs
+    mem_limit: 640m
+    networks: [internal]
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["worker"]
+    env_file: .env
+    environment:
+      TZ: America/Santiago
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # El worker también ejecuta `alembic upgrade head` al arrancar; esperar a
+      # que la API esté sana evita que dos procesos creen tablas a la vez en un
+      # arranque en frío (p. ej. tras reiniciar el servidor).
+      api:
+        condition: service_healthy
+    volumes:
+      - models:/models
+      - ./docs:/app/docs
+    # El worker carga fastembed (ONNX) para RAG; necesita más margen que la API.
+    mem_limit: 896m
+    networks: [internal]
+
+  nginx:
+    build:
+      # Contexto en la raíz para poder compilar el panel Astro en una etapa
+      # previa y servir los estáticos desde el mismo contenedor Nginx.
+      context: .
+      dockerfile: nginx/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # Solo loopback: el tráfico público entra por Cloudflare Tunnel, que usa
+      # la red interna (nginx:80). Así el 8080 no queda expuesto aunque el
+      # firewall del host esté mal configurado (Docker salta las reglas de ufw).
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    mem_limit: 128m
+    networks: [internal]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # El túnel se configura en el dashboard de Cloudflare apuntando a
+    # http://nginx:80; aquí solo se ejecuta con el token del túnel.
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${TUNNEL_TOKEN}"]
+    depends_on:
+      nginx:
+        condition: service_healthy
+    profiles: ["tunnel"]
+    mem_limit: 128m
+    networks: [internal]
+
+volumes:
+  pgdata:
+  models:
+
+networks:
+  internal:
+    driver: bridge

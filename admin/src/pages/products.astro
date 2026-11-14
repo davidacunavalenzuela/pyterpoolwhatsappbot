@@ -1,0 +1,314 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="Productos">
+  <div class="stack">
+    <div class="spread">
+      <div>
+        <h1>Productos</h1>
+        <p class="muted small">Catálogo que consulta el agente. Los cambios se reflejan en la siguiente respuesta.</p>
+      </div>
+      <button type="button" class="primary" id="new-product">Nuevo producto</button>
+    </div>
+
+    <section class="card stack">
+      <div class="row">
+        <input type="search" id="search" placeholder="Buscar por nombre o SKU…" aria-label="Buscar productos" />
+        <select id="active-filter" aria-label="Filtrar por estado" style="max-width: 180px">
+          <option value="">Todos</option>
+          <option value="true">Activos</option>
+          <option value="false">Inactivos</option>
+        </select>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Nombre</th>
+              <th>Precio</th>
+              <th>Stock</th>
+              <th>Estado</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p class="small muted" id="count"></p>
+    </section>
+  </div>
+
+  <dialog id="product-dialog">
+    <form method="dialog" class="dialog-body" id="product-form">
+      <h2 id="dialog-title">Nuevo producto</h2>
+      <input type="hidden" name="id" />
+
+      <div class="form-grid">
+        <label>SKU <input name="sku" required maxlength="64" /></label>
+        <label>Nombre <input name="name" required maxlength="200" /></label>
+        <label>Categoría <select name="category_id"><option value="">Sin categoría</option></select></label>
+        <label>Moneda <input name="currency" value="CLP" maxlength="3" /></label>
+        <label>Precio <input name="price" type="number" min="0" step="0.01" required /></label>
+        <label id="stock-field">Stock inicial <input name="stock" type="number" min="0" step="1" value="0" /></label>
+        <label class="full">Descripción corta
+          <textarea name="description" rows="2" maxlength="600"></textarea>
+        </label>
+        <label class="full">Modo de uso (lo cita el bot en consultas rápidas)
+          <textarea name="usage_summary" rows="4" maxlength="2000"></textarea>
+        </label>
+        <label class="full">URL de imagen <input name="image_url" maxlength="500" placeholder="https://…" /></label>
+        <label class="row" style="align-items:center; gap:.5rem">
+          <input type="checkbox" name="active" checked style="width:auto" /> Activo
+        </label>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" id="cancel-product">Cancelar</button>
+        <button class="primary" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stock-dialog">
+    <form method="dialog" class="dialog-body" id="stock-form">
+      <h2>Ajustar stock</h2>
+      <p class="muted small" id="stock-current"></p>
+      <input type="hidden" name="id" />
+      <label>Movimiento (positivo ingresa, negativo descuenta)
+        <input name="delta" type="number" step="1" required />
+      </label>
+      <label>Motivo
+        <input name="reason" maxlength="120" placeholder="reposición, merma, conteo…" />
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-stock">Cancelar</button>
+        <button class="primary" type="submit">Aplicar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    import { api, el, money, toast } from '../lib/api';
+
+    interface Product {
+      id: number;
+      sku: string;
+      name: string;
+      category_id: number | null;
+      description: string;
+      usage_summary: string;
+      price: number;
+      currency: string;
+      stock: number;
+      active: boolean;
+      image_url: string | null;
+    }
+
+    interface Category {
+      id: number;
+      name: string;
+    }
+
+    const rows = document.querySelector<HTMLElement>('#rows')!;
+    const count = document.querySelector<HTMLElement>('#count')!;
+    const search = document.querySelector<HTMLInputElement>('#search')!;
+    const activeFilter = document.querySelector<HTMLSelectElement>('#active-filter')!;
+    const productDialog = document.querySelector<HTMLDialogElement>('#product-dialog')!;
+    const productForm = document.querySelector<HTMLFormElement>('#product-form')!;
+    const stockDialog = document.querySelector<HTMLDialogElement>('#stock-dialog')!;
+    const stockForm = document.querySelector<HTMLFormElement>('#stock-form')!;
+    const categorySelect = productForm.elements.namedItem('category_id') as HTMLSelectElement;
+
+    let categories: Category[] = [];
+    let cache: Product[] = [];
+
+    function debounce(fn: () => void, ms = 250) {
+      let timer = 0;
+      return () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(fn, ms);
+      };
+    }
+
+    async function loadCategories() {
+      categories = await api<Category[]>('/categories');
+      categorySelect.replaceChildren(el('option', { value: '' }, 'Sin categoría'));
+      for (const category of categories) {
+        categorySelect.append(el('option', { value: String(category.id) }, category.name));
+      }
+    }
+
+    async function load() {
+      const params = new URLSearchParams({ limit: '200' });
+      if (search.value.trim()) params.set('q', search.value.trim());
+      if (activeFilter.value) params.set('active', activeFilter.value);
+
+      try {
+        const data = await api<{ items: Product[]; total: number }>(`/products?${params}`);
+        cache = data.items;
+        render(data.items);
+        count.textContent = `${data.total} productos`;
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo cargar el catálogo.', 'error');
+      }
+    }
+
+    function render(items: Product[]) {
+      rows.replaceChildren();
+      for (const product of items) {
+        const tr = el('tr');
+        tr.append(
+          el('td', { class: 'mono' }, product.sku),
+          el('td', {}, product.name),
+          el('td', {}, money(product.price, product.currency)),
+          el('td', {}, String(product.stock)),
+        );
+
+        const status = el('td');
+        const badge = el('span', { class: `badge ${product.active ? 'ok' : 'muted'}` }, product.active ? 'Activo' : 'Inactivo');
+        status.append(badge);
+        tr.append(status);
+
+        const actions = el('td');
+        const edit = el('button', { class: 'small', type: 'button' }, 'Editar');
+        edit.addEventListener('click', () => openEdit(product));
+        const stock = el('button', { class: 'small', type: 'button' }, 'Stock');
+        stock.addEventListener('click', () => openStock(product));
+        actions.append(edit, document.createTextNode(' '), stock);
+
+        if (product.active) {
+          const off = el('button', { class: 'small danger', type: 'button' }, 'Desactivar');
+          off.addEventListener('click', () => deactivate(product));
+          actions.append(document.createTextNode(' '), off);
+        }
+        tr.append(actions);
+        rows.append(tr);
+      }
+
+      if (!items.length) {
+        const tr = el('tr');
+        tr.append(el('td', { colspan: '6', class: 'muted' }, 'Sin productos. Crea el primero o ajusta el filtro.'));
+        rows.append(tr);
+      }
+    }
+
+    function setField(name: string, value: string) {
+      const field = productForm.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | null;
+      if (field) field.value = value;
+    }
+
+    function openCreate() {
+      productForm.reset();
+      (productForm.elements.namedItem('id') as HTMLInputElement).value = '';
+      setField('currency', 'CLP');
+      setField('stock', '0');
+      (productForm.elements.namedItem('active') as HTMLInputElement).checked = true;
+      document.querySelector('#dialog-title')!.textContent = 'Nuevo producto';
+      (document.querySelector('#stock-field') as HTMLElement).style.display = '';
+      productDialog.showModal();
+    }
+
+    function openEdit(product: Product) {
+      productForm.reset();
+      (productForm.elements.namedItem('id') as HTMLInputElement).value = String(product.id);
+      setField('sku', product.sku);
+      setField('name', product.name);
+      setField('category_id', product.category_id ? String(product.category_id) : '');
+      setField('currency', product.currency);
+      setField('price', String(product.price));
+      setField('description', product.description);
+      setField('usage_summary', product.usage_summary);
+      setField('image_url', product.image_url ?? '');
+      (productForm.elements.namedItem('active') as HTMLInputElement).checked = product.active;
+      // En edición el stock se cambia con trazabilidad desde el diálogo de stock.
+      document.querySelector('#stock-field')!.style.display = 'none';
+      document.querySelector('#dialog-title')!.textContent = `Editar ${product.sku}`;
+      productDialog.showModal();
+    }
+
+    function openStock(product: Product) {
+      (stockForm.elements.namedItem('id') as HTMLInputElement).value = String(product.id);
+      (stockForm.elements.namedItem('delta') as HTMLInputElement).value = '';
+      (stockForm.elements.namedItem('reason') as HTMLInputElement).value = '';
+      document.querySelector('#stock-current')!.textContent =
+        `${product.name} · stock actual: ${product.stock} unidades`;
+      stockDialog.showModal();
+    }
+
+    productForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = new FormData(productForm);
+      const id = String(data.get('id') ?? '');
+      const categoryValue = String(data.get('category_id') ?? '');
+
+      const payload: Record<string, unknown> = {
+        name: String(data.get('name') ?? '').trim(),
+        category_id: categoryValue ? Number(categoryValue) : null,
+        description: String(data.get('description') ?? ''),
+        usage_summary: String(data.get('usage_summary') ?? ''),
+        price: Number(data.get('price') ?? 0),
+        currency: String(data.get('currency') ?? 'CLP').toUpperCase(),
+        active: data.get('active') === 'on',
+        image_url: String(data.get('image_url') ?? '').trim() || null,
+      };
+      if (!id) {
+        payload.sku = String(data.get('sku') ?? '').trim().toUpperCase();
+        payload.stock = Number(data.get('stock') ?? 0);
+      }
+
+      try {
+        if (id) await api(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+        else await api('/products', { method: 'POST', body: JSON.stringify(payload) });
+        productDialog.close();
+        toast(id ? 'Producto actualizado.' : 'Producto creado.');
+        await load();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo guardar.', 'error');
+      }
+    });
+
+    stockForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = new FormData(stockForm);
+      const id = String(data.get('id') ?? '');
+      try {
+        await api(`/products/${id}/stock`, {
+          method: 'POST',
+          body: JSON.stringify({
+            delta: Number(data.get('delta') ?? 0),
+            reason: String(data.get('reason') ?? 'ajuste manual'),
+          }),
+        });
+        stockDialog.close();
+        toast('Stock actualizado.');
+        await load();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo ajustar el stock.', 'error');
+      }
+    });
+
+    async function deactivate(product: Product) {
+      if (!confirm(`¿Desactivar «${product.name}»? Dejará de mostrarse a los clientes.`)) return;
+      try {
+        await api(`/products/${product.id}`, { method: 'DELETE' });
+        toast('Producto desactivado.');
+        await load();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo desactivar.', 'error');
+      }
+    }
+
+    document.querySelector('#new-product')?.addEventListener('click', openCreate);
+    document.querySelector('#cancel-product')?.addEventListener('click', () => productDialog.close());
+    document.querySelector('#cancel-stock')?.addEventListener('click', () => stockDialog.close());
+    search.addEventListener('input', debounce(load));
+    activeFilter.addEventListener('change', load);
+
+    await loadCategories();
+    await load();
+    if (new URLSearchParams(location.search).get('new') === '1') openCreate();
+  </script>
+</Base>

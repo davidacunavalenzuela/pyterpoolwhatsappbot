@@ -1,0 +1,38 @@
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Node / Astro
+node_modules/
+dist/
+.astro/
+admin/.astro/
+admin/dist/
+
+# Datos y artefactos
+models/
+backups/
+docs/**/_uploads/
+*.sqlite
+*.db
+*.log
+
+# Editores / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+# Contexto del backend: se excluyen tests y artefactos de desarrollo.
+__pycache__
+*.pyc
+.venv
+venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+tests
+docs
+.env
+*.md

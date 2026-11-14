@@ -1,0 +1,243 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="Conversaciones">
+  <div class="stack">
+    <div class="spread">
+      <div>
+        <h1>Conversaciones</h1>
+        <p class="muted small">
+          Responder desde aquí pausa el bot y toma el control humano del hilo.
+        </p>
+      </div>
+      <button type="button" id="refresh">Actualizar</button>
+    </div>
+
+    <section class="chat-layout">
+      <div class="card stack">
+        <h2>Chats abiertos</h2>
+        <div class="chat-list" id="list" role="listbox" aria-label="Conversaciones"></div>
+        <p class="small muted" id="list-count"></p>
+      </div>
+
+      <div class="card stack">
+        <div class="spread">
+          <div>
+            <h2 id="chat-title">Selecciona un chat</h2>
+            <p class="small muted" id="chat-subtitle"></p>
+          </div>
+          <div class="row" id="chat-actions" hidden>
+            <button type="button" class="small" id="toggle-bot">Pausar bot</button>
+            <button type="button" class="small danger" id="close-chat">Cerrar</button>
+          </div>
+        </div>
+
+        <div class="chat-messages" id="messages" aria-live="polite">
+          <p class="muted small">Elige una conversación para ver el historial.</p>
+        </div>
+
+        <form id="send-form" class="row" hidden>
+          <input name="text" placeholder="Escribe una respuesta…" maxlength="4000" aria-label="Mensaje" />
+          <button class="primary" type="submit">Enviar</button>
+        </form>
+        <p class="small muted" id="window-note" hidden></p>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    import { api, el, fmtDate, statusBadge, toast } from '../lib/api';
+
+    interface Conversation {
+      id: number;
+      customer_id: number;
+      customer_name: string | null;
+      customer_wa_id: string | null;
+      status: string;
+      bot_enabled: boolean;
+      last_message_at: string | null;
+    }
+
+    interface Message {
+      id: number;
+      direction: 'in' | 'out';
+      msg_type: string;
+      body: string | null;
+      transcription: string | null;
+      status: string | null;
+      created_at: string;
+    }
+
+    const listNode = document.querySelector<HTMLElement>('#list')!;
+    const listCount = document.querySelector<HTMLElement>('#list-count')!;
+    const messagesNode = document.querySelector<HTMLElement>('#messages')!;
+    const chatTitle = document.querySelector<HTMLElement>('#chat-title')!;
+    const chatSubtitle = document.querySelector<HTMLElement>('#chat-subtitle')!;
+    const chatActions = document.querySelector<HTMLElement>('#chat-actions')!;
+    const sendForm = document.querySelector<HTMLFormElement>('#send-form')!;
+    const toggleBot = document.querySelector<HTMLButtonElement>('#toggle-bot')!;
+    const windowNote = document.querySelector<HTMLElement>('#window-note')!;
+
+    let conversations: Conversation[] = [];
+    let selected: Conversation | null = null;
+    let lastInboundAt: Date | null = null;
+
+    async function loadList() {
+      try {
+        const data = await api<{ items: Conversation[]; total: number }>('/conversations');
+        conversations = data.items;
+        renderList();
+        listCount.textContent = `${data.total} conversaciones abiertas`;
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudieron cargar los chats.', 'error');
+      }
+    }
+
+    function renderList() {
+      listNode.replaceChildren();
+      for (const conversation of conversations) {
+        const button = el('button', {
+          type: 'button',
+          class: 'chat-item',
+          role: 'option',
+          'aria-selected': String(selected?.id === conversation.id),
+        });
+        const top = el('div', { class: 'spread' });
+        top.append(
+          el('strong', {}, conversation.customer_name ?? conversation.customer_wa_id ?? 'Cliente'),
+          statusBadge(conversation.bot_enabled ? 'ready' : 'processing'),
+        );
+        button.append(top);
+        button.append(
+          el('div', { class: 'small muted' }, `${conversation.bot_enabled ? 'Bot activo' : 'Control humano'} · ${fmtDate(conversation.last_message_at)}`),
+        );
+        button.addEventListener('click', () => selectConversation(conversation));
+        listNode.append(button);
+      }
+      if (!conversations.length) {
+        listNode.append(el('p', { class: 'muted small' }, 'Sin conversaciones abiertas.'));
+      }
+    }
+
+    async function selectConversation(conversation: Conversation) {
+      selected = conversation;
+      renderList();
+      chatActions.hidden = false;
+      sendForm.hidden = false;
+      chatTitle.textContent = conversation.customer_name ?? conversation.customer_wa_id ?? 'Cliente';
+      chatSubtitle.textContent = `WhatsApp ${conversation.customer_wa_id ?? '—'}`;
+      toggleBot.textContent = conversation.bot_enabled ? 'Pausar bot' : 'Activar bot';
+      await loadMessages();
+    }
+
+    async function loadMessages() {
+      if (!selected) return;
+      try {
+        const messages = await api<Message[]>(`/conversations/${selected.id}/messages?limit=150`);
+        messagesNode.replaceChildren();
+        lastInboundAt = null;
+        for (const message of messages) {
+          const bubble = el('div', { class: `bubble ${message.direction}` });
+          const text = message.body ?? message.transcription ?? `[${message.msg_type}]`;
+          bubble.append(document.createTextNode(text));
+          const meta = el('span', { class: 'meta' }, `${fmtDate(message.created_at)}${message.status ? ` · ${message.status}` : ''}`);
+          bubble.append(meta);
+          messagesNode.append(bubble);
+          if (message.direction === 'in') lastInboundAt = new Date(message.created_at);
+        }
+        if (!messages.length) {
+          messagesNode.append(el('p', { class: 'muted small' }, 'Sin mensajes todavía.'));
+        }
+        messagesNode.scrollTop = messagesNode.scrollHeight;
+        updateWindowNote();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo cargar el historial.', 'error');
+      }
+    }
+
+    function updateWindowNote() {
+      if (!lastInboundAt) {
+        windowNote.hidden = true;
+        return;
+      }
+      const hours = (Date.now() - lastInboundAt.getTime()) / 3_600_000;
+      if (hours > 24) {
+        windowNote.hidden = false;
+        windowNote.textContent =
+          'Pasaron más de 24 h desde el último mensaje del cliente: Meta solo permite plantillas aprobadas.';
+      } else {
+        windowNote.hidden = true;
+      }
+    }
+
+    sendForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!selected) return;
+      const data = new FormData(sendForm);
+      const text = String(data.get('text') ?? '').trim();
+      if (!text) return;
+      try {
+        await api(`/conversations/${selected.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ text }),
+        });
+        sendForm.reset();
+        selected = { ...selected, bot_enabled: false, status: 'human' };
+        toggleBot.textContent = 'Activar bot';
+        await Promise.all([loadMessages(), loadList()]);
+        toast('Mensaje enviado.');
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo enviar.', 'error');
+      }
+    });
+
+    toggleBot.addEventListener('click', async () => {
+      if (!selected) return;
+      const enabled = !selected.bot_enabled;
+      try {
+        const updated = await api<Conversation>(`/conversations/${selected.id}/bot`, {
+          method: 'PATCH',
+          body: JSON.stringify({ bot_enabled: enabled }),
+        });
+        selected = updated;
+        toggleBot.textContent = updated.bot_enabled ? 'Pausar bot' : 'Activar bot';
+        await loadList();
+        toast(updated.bot_enabled ? 'Bot reactivado.' : 'Bot pausado.');
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo cambiar el estado.', 'error');
+      }
+    });
+
+    document.querySelector('#close-chat')?.addEventListener('click', async () => {
+      if (!selected || !confirm('¿Cerrar esta conversación?')) return;
+      try {
+        await api(`/conversations/${selected.id}/close`, { method: 'POST' });
+        selected = null;
+        chatActions.hidden = true;
+        sendForm.hidden = true;
+        messagesNode.replaceChildren(el('p', { class: 'muted small' }, 'Conversación cerrada.'));
+        chatTitle.textContent = 'Selecciona un chat';
+        chatSubtitle.textContent = '';
+        await loadList();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo cerrar.', 'error');
+      }
+    });
+
+    document.querySelector('#refresh')?.addEventListener('click', async () => {
+      await loadList();
+      if (selected) await loadMessages();
+    });
+
+    // Refresco ligero: el panel es estático y no tiene websockets; 10 s es
+    // suficiente para operar y no castiga la batería de un portátil.
+    window.setInterval(async () => {
+      if (document.hidden) return;
+      await loadList();
+      if (selected) await loadMessages();
+    }, 10_000);
+
+    await loadList();
+  </script>
+</Base>

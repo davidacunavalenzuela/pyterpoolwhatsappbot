@@ -1,0 +1,108 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="Resumen">
+  <div class="stack">
+    <div class="spread">
+      <div>
+        <h1>Resumen</h1>
+        <p class="muted small">Actividad del día y estado operativo del bot.</p>
+      </div>
+      <button type="button" id="refresh">Actualizar</button>
+    </div>
+
+    <section class="grid-cards" id="stats" aria-live="polite"></section>
+
+    <section class="card">
+      <div class="spread">
+        <h2>Últimos pedidos</h2>
+        <a href="/orders/">Ver todos</a>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Estado</th>
+              <th>Total</th>
+              <th>Fecha</th>
+            </tr>
+          </thead>
+          <tbody id="orders"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    import { api, el, fmtDate, money, statusBadge, toast } from '../lib/api';
+
+    interface OrderRow {
+      code: string;
+      status: string;
+      total: number;
+      created_at: string;
+    }
+
+    interface Stats {
+      orders_today: number;
+      revenue_today: number;
+      orders_draft: number;
+      conversations_open: number;
+      low_stock: number;
+      documents_ready: number;
+      queue_pending: number;
+      recent_orders: OrderRow[];
+    }
+
+    const statsNode = document.querySelector<HTMLElement>('#stats')!;
+    const ordersNode = document.querySelector<HTMLElement>('#orders')!;
+
+    function card(label: string, value: string, hint = ''): HTMLElement {
+      const node = el('div', { class: 'stat' });
+      node.append(
+        el('div', { class: 'label' }, label),
+        el('div', { class: 'value' }, value),
+      );
+      if (hint) node.append(el('div', { class: 'hint' }, hint));
+      return node;
+    }
+
+    async function load() {
+      try {
+        const stats = await api<Stats>('/stats');
+        statsNode.replaceChildren(
+          card('Ventas hoy', money(stats.revenue_today), `${stats.orders_today} pedidos confirmados`),
+          card('Borradores', String(stats.orders_draft), 'carritos sin confirmar'),
+          card('Conversaciones', String(stats.conversations_open), 'abiertas'),
+          card('Stock bajo', String(stats.low_stock), 'productos con ≤ 5 unidades'),
+          card('Documentos', String(stats.documents_ready), 'listos para RAG'),
+          card('Cola', String(stats.queue_pending), 'eventos pendientes'),
+        );
+
+        ordersNode.replaceChildren();
+        for (const order of stats.recent_orders) {
+          const tr = el('tr');
+          const codeCell = el('td');
+          codeCell.append(el('a', { href: `/orders/?code=${encodeURIComponent(order.code)}` }, order.code));
+          const statusCell = el('td');
+          statusCell.append(statusBadge(order.status));
+          tr.append(codeCell, statusCell, el('td', {}, money(order.total)), el('td', { class: 'muted' }, fmtDate(order.created_at)));
+          ordersNode.append(tr);
+        }
+        if (!stats.recent_orders.length) {
+          const tr = el('tr');
+          const td = el('td', { colspan: '4', class: 'muted' }, 'Sin pedidos todavía.');
+          tr.append(td);
+          ordersNode.append(tr);
+        }
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudieron cargar las métricas.', 'error');
+      }
+    }
+
+    document.querySelector('#refresh')?.addEventListener('click', load);
+    load();
+  </script>
+</Base>

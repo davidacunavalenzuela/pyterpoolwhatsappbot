@@ -1,0 +1,150 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="Ajustes">
+  <div class="stack">
+    <div class="spread">
+      <div>
+        <h1>Ajustes del negocio</h1>
+        <p class="muted small">Estos datos forman el prompt del agente. Los cambios aplican al siguiente mensaje.</p>
+      </div>
+      <button type="button" id="reload">Recargar</button>
+    </div>
+
+    <form id="settings-form" class="stack">
+      <section class="card stack">
+        <h2>Negocio</h2>
+        <div class="form-grid">
+          <label>Nombre <input name="business.name" maxlength="120" required /></label>
+          <label>Moneda <input name="business.currency" maxlength="3" /></label>
+          <label class="full">Descripción
+            <textarea name="business.description" rows="2" maxlength="500"></textarea>
+          </label>
+          <label>Horario <input name="business.hours" maxlength="200" /></label>
+          <label>Teléfono <input name="business.phone" maxlength="40" /></label>
+          <label>Zona horaria <input name="business.timezone" maxlength="60" placeholder="America/Santiago" /></label>
+          <label>Dirección <input name="business.address" maxlength="200" /></label>
+          <label class="full">Despacho
+            <textarea name="business.delivery" rows="2" maxlength="500"></textarea>
+          </label>
+          <label class="full">Formas de pago
+            <textarea name="business.payment" rows="2" maxlength="500"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="card stack">
+        <h2>Comportamiento del agente</h2>
+        <div class="form-grid">
+          <label>Tono <input name="agent.tone" maxlength="120" /></label>
+          <label>Idioma <input name="agent.language" maxlength="60" /></label>
+          <label class="full">Mensaje al derivar a humano
+            <textarea name="agent.handoff_message" rows="2" maxlength="500"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="card stack">
+        <h2>Ventas</h2>
+        <label class="row" style="align-items:center; gap:.5rem">
+          <input type="checkbox" name="sales.orders_enabled" style="width:auto" />
+          Permitir que el bot cree y confirme pedidos
+        </label>
+        <label class="row" style="align-items:center; gap:.5rem">
+          <input type="checkbox" name="sales.require_confirmation" style="width:auto" />
+          Exigir confirmación explícita del cliente antes de cerrar el pedido
+        </label>
+        <p class="small muted">
+          Si desactivas los pedidos, el bot seguirá respondiendo consultas y derivando a una persona.
+        </p>
+      </section>
+
+      <div class="row">
+        <button class="primary" type="submit">Guardar ajustes</button>
+        <span class="small muted" id="saved"></span>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    import { api, toast } from '../lib/api';
+
+    type Settings = Record<string, Record<string, unknown>>;
+
+    const form = document.querySelector<HTMLFormElement>('#settings-form')!;
+    const saved = document.querySelector<HTMLElement>('#saved')!;
+
+    function setValue(name: string, value: unknown) {
+      const field = form.elements.namedItem(name);
+      if (field instanceof HTMLInputElement) {
+        if (field.type === 'checkbox') field.checked = Boolean(value);
+        else field.value = value == null ? '' : String(value);
+      } else if (field instanceof HTMLTextAreaElement) {
+        field.value = value == null ? '' : String(value);
+      } else if (field instanceof HTMLSelectElement) {
+        field.value = String(value ?? '');
+      }
+    }
+
+    function readValue(name: string): unknown {
+      const field = form.elements.namedItem(name);
+      if (field instanceof HTMLInputElement) {
+        return field.type === 'checkbox' ? field.checked : field.value.trim();
+      }
+      if (field instanceof HTMLTextAreaElement) return field.value.trim();
+      if (field instanceof HTMLSelectElement) return field.value;
+      return '';
+    }
+
+    async function load() {
+      try {
+        const data = await api<{ settings: Settings }>('/settings');
+        for (const [section, values] of Object.entries(data.settings)) {
+          for (const [key, value] of Object.entries(values)) {
+            setValue(`${section}.${key}`, value);
+          }
+        }
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudieron cargar los ajustes.', 'error');
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const payload = {
+        business: {
+          name: readValue('business.name'),
+          currency: readValue('business.currency'),
+          description: readValue('business.description'),
+          hours: readValue('business.hours'),
+          phone: readValue('business.phone'),
+          timezone: readValue('business.timezone'),
+          address: readValue('business.address'),
+          delivery: readValue('business.delivery'),
+          payment: readValue('business.payment'),
+        },
+        agent: {
+          tone: readValue('agent.tone'),
+          language: readValue('agent.language'),
+          handoff_message: readValue('agent.handoff_message'),
+        },
+        sales: {
+          orders_enabled: readValue('sales.orders_enabled'),
+          require_confirmation: readValue('sales.require_confirmation'),
+        },
+      };
+      try {
+        await api('/settings', { method: 'PUT', body: JSON.stringify(payload) });
+        saved.textContent = 'Guardado.';
+        window.setTimeout(() => (saved.textContent = ''), 2500);
+        toast('Ajustes guardados.');
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudieron guardar.', 'error');
+      }
+    });
+
+    document.querySelector('#reload')?.addEventListener('click', load);
+    await load();
+  </script>
+</Base>

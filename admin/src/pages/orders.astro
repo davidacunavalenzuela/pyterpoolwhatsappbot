@@ -1,0 +1,239 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="Pedidos">
+  <div class="stack">
+    <div class="spread">
+      <div>
+        <h1>Pedidos</h1>
+        <p class="muted small">Confirmar una venta descuenta stock. Cancelar una venta confirmada lo repone.</p>
+      </div>
+      <button type="button" id="refresh">Actualizar</button>
+    </div>
+
+    <section class="card stack">
+      <div class="row">
+        <select id="status-filter" aria-label="Filtrar por estado" style="max-width: 200px">
+          <option value="">Todos los estados</option>
+          <option value="draft">Borrador</option>
+          <option value="confirmed">Confirmado</option>
+          <option value="shipped">Enviado</option>
+          <option value="delivered">Entregado</option>
+          <option value="cancelled">Cancelado</option>
+        </select>
+        <input type="search" id="search" placeholder="Buscar por código…" aria-label="Buscar pedido" />
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Cliente</th>
+              <th>Estado</th>
+              <th>Total</th>
+              <th>Creado</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p class="small muted" id="count"></p>
+    </section>
+  </div>
+
+  <dialog id="detail-dialog">
+    <div class="dialog-body">
+      <div class="spread">
+        <h2 id="detail-title">Pedido</h2>
+        <span id="detail-status"></span>
+      </div>
+      <p class="small muted" id="detail-customer"></p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Producto</th><th>Cant.</th><th>Precio</th><th>Subtotal</th></tr>
+          </thead>
+          <tbody id="detail-items"></tbody>
+        </table>
+      </div>
+
+      <form id="detail-form" class="stack">
+        <input type="hidden" name="id" />
+        <div class="form-grid">
+          <label>Estado
+            <select name="status">
+              <option value="draft">Borrador</option>
+              <option value="confirmed">Confirmado</option>
+              <option value="shipped">Enviado</option>
+              <option value="delivered">Entregado</option>
+              <option value="cancelled">Cancelado</option>
+            </select>
+          </label>
+          <label>Total <input name="total" readonly /></label>
+          <label class="full">Dirección de entrega
+            <input name="shipping_address" maxlength="500" />
+          </label>
+          <label class="full">Notas internas
+            <textarea name="notes" rows="2" maxlength="1000"></textarea>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="close-detail">Cerrar</button>
+          <button class="primary" type="submit">Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <script>
+    import { api, el, fmtDate, money, statusBadge, toast } from '../lib/api';
+
+    interface OrderItem {
+      name_snapshot: string;
+      quantity: number;
+      unit_price: number;
+      line_total: number;
+    }
+
+    interface Order {
+      id: number;
+      code: string;
+      customer_id: number;
+      status: string;
+      notes: string;
+      shipping_address: string;
+      total: number;
+      created_at: string;
+      items: OrderItem[];
+    }
+
+    const rows = document.querySelector<HTMLElement>('#rows')!;
+    const count = document.querySelector<HTMLElement>('#count')!;
+    const statusFilter = document.querySelector<HTMLSelectElement>('#status-filter')!;
+    const search = document.querySelector<HTMLInputElement>('#search')!;
+    const dialog = document.querySelector<HTMLDialogElement>('#detail-dialog')!;
+    const detailForm = document.querySelector<HTMLFormElement>('#detail-form')!;
+
+    function debounce(fn: () => void, ms = 250) {
+      let timer = 0;
+      return () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(fn, ms);
+      };
+    }
+
+    async function load(): Promise<Order[]> {
+      const params = new URLSearchParams({ limit: '100' });
+      if (statusFilter.value) params.set('status', statusFilter.value);
+      if (search.value.trim()) params.set('q', search.value.trim().toUpperCase());
+      try {
+        const data = await api<{ items: Order[]; total: number }>(`/orders?${params}`);
+        render(data.items);
+        count.textContent = `${data.total} pedidos`;
+        return data.items;
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudieron cargar los pedidos.', 'error');
+        return [];
+      }
+    }
+
+    function render(items: Order[]) {
+      rows.replaceChildren();
+      for (const order of items) {
+        const tr = el('tr');
+        tr.append(el('td', { class: 'mono' }, order.code));
+        // El nombre del cliente no viene en el listado para no hacer N+1; se
+        // muestra el ID y se resuelve al abrir el detalle.
+        tr.append(el('td', { class: 'muted' }, `Cliente #${order.customer_id}`));
+        const statusCell = el('td');
+        statusCell.append(statusBadge(order.status));
+        tr.append(statusCell, el('td', {}, money(order.total)), el('td', { class: 'muted' }, fmtDate(order.created_at)));
+
+        const action = el('td');
+        const open = el('button', { class: 'small', type: 'button' }, 'Ver');
+        open.addEventListener('click', () => openDetail(order.id));
+        action.append(open);
+        tr.append(action);
+        rows.append(tr);
+      }
+      if (!items.length) {
+        const tr = el('tr');
+        tr.append(el('td', { colspan: '6', class: 'muted' }, 'Sin pedidos para este filtro.'));
+        rows.append(tr);
+      }
+    }
+
+    async function openDetail(id: number) {
+      try {
+        const order = await api<Order>(`/orders/${id}`);
+        (detailForm.elements.namedItem('id') as HTMLInputElement).value = String(order.id);
+        (detailForm.elements.namedItem('status') as HTMLSelectElement).value = order.status;
+        (detailForm.elements.namedItem('total') as HTMLInputElement).value = money(order.total);
+        (detailForm.elements.namedItem('shipping_address') as HTMLInputElement).value = order.shipping_address;
+        (detailForm.elements.namedItem('notes') as HTMLTextAreaElement).value = order.notes;
+
+        document.querySelector('#detail-title')!.textContent = order.code;
+        const statusNode = document.querySelector('#detail-status')!;
+        statusNode.replaceChildren(statusBadge(order.status));
+
+        const itemsNode = document.querySelector('#detail-items')!;
+        itemsNode.replaceChildren();
+        for (const item of order.items) {
+          const tr = el('tr');
+          tr.append(
+            el('td', {}, item.name_snapshot),
+            el('td', {}, String(item.quantity)),
+            el('td', {}, money(item.unit_price)),
+            el('td', {}, money(item.line_total)),
+          );
+          itemsNode.append(tr);
+        }
+
+        const customer = await api<{ name: string | null; wa_id: string; phone: string | null }>(
+          `/orders/${id}/customer`,
+        );
+        document.querySelector('#detail-customer')!.textContent =
+          `${customer.name ?? 'Sin nombre'} · WhatsApp ${customer.wa_id}`;
+
+        dialog.showModal();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo abrir el pedido.', 'error');
+      }
+    }
+
+    detailForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = new FormData(detailForm);
+      const id = String(data.get('id') ?? '');
+      try {
+        await api(`/orders/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            status: String(data.get('status') ?? ''),
+            notes: String(data.get('notes') ?? ''),
+            shipping_address: String(data.get('shipping_address') ?? ''),
+          }),
+        });
+        dialog.close();
+        toast('Pedido actualizado.');
+        await load();
+      } catch (exc) {
+        toast(exc instanceof Error ? exc.message : 'No se pudo guardar.', 'error');
+      }
+    });
+
+    document.querySelector('#refresh')?.addEventListener('click', load);
+    document.querySelector('#close-detail')?.addEventListener('click', () => dialog.close());
+    statusFilter.addEventListener('change', load);
+    search.addEventListener('input', debounce(load));
+
+    const initialCode = new URLSearchParams(location.search).get('code');
+    if (initialCode) search.value = initialCode;
+    const items = await load();
+    if (initialCode && items.length) await openDetail(items[0].id);
+  </script>
+</Base>

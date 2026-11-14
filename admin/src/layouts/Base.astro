@@ -1,0 +1,96 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+
+// La navegación se resuelve con rutas estáticas: Nginx hace try_files y no hay
+// router de cliente (menos JS y sin pantallas en blanco).
+const links = [
+  { href: '/', label: 'Resumen' },
+  { href: '/products/', label: 'Productos' },
+  { href: '/orders/', label: 'Pedidos' },
+  { href: '/conversations/', label: 'Conversaciones' },
+  { href: '/knowledge/', label: 'Conocimiento' },
+  { href: '/settings/', label: 'Ajustes' },
+];
+
+const current = Astro.url.pathname.replace(/\/+$/, '') || '/';
+const isCurrent = (href: string) => {
+  const normalized = href.replace(/\/+$/, '') || '/';
+  return normalized === current;
+};
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{title} · Panel</title>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <span class="brand">Asistente WhatsApp</span>
+        <nav class="nav" aria-label="Principal">
+          {links.map((link) => (
+            <a href={link.href} aria-current={isCurrent(link.href) ? 'page' : undefined}>
+              {link.label}
+            </a>
+          ))}
+        </nav>
+        <div class="sidebar-footer">
+          <span class="who" id="who">—</span>
+          <button type="button" class="small" id="logout">Salir</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <slot />
+      </main>
+    </div>
+
+    <script>
+      import { api, toast } from '../lib/api';
+
+      async function boot() {
+        try {
+          const me = await api<{ email: string }>('/auth/me');
+          document.querySelector('#who')!.textContent = me.email;
+        } catch {
+          /* api() ya redirige a /login/ */
+        }
+      }
+
+      document.querySelector('#logout')?.addEventListener('click', async () => {
+        try {
+          await api('/auth/logout', { method: 'POST' });
+        } catch {
+          /* la cookie se borra igual al expirar */
+        }
+        location.href = '/login/';
+      });
+
+      // Aviso visible cuando el worker acumula eventos (cuota del LLM agotada,
+      // Meta caído, etc.) sin obligar a abrir la página de estadísticas.
+      async function watchQueue() {
+        try {
+          const stats = await api<{ queue_pending: number }>('/stats');
+          if (stats.queue_pending > 25) {
+            toast(`Hay ${stats.queue_pending} mensajes en cola. Revisa la cuota del LLM.`, 'error');
+          }
+        } catch {
+          /* silencioso */
+        }
+      }
+
+      boot();
+      window.setTimeout(watchQueue, 4000);
+    </script>
+  </body>
+</html>
